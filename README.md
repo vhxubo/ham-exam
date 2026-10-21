@@ -27,7 +27,11 @@
 cd ham-exam && python3 -m http.server 8080
 ```
 
-发布 GitHub Pages：推仓库 → Settings → Pages → 选 main 分支根目录。
+### 发布 GitHub Pages
+
+推到 GitHub 后：仓库 **Settings → Pages → Build and deployment → Source 选 "GitHub Actions"**（只需设置一次），之后每次 push `main` 都会自动部署（`.github/workflows/deploy.yml`）。
+
+工作流会先校验 `banks/`、`dist/` 与 `data/raw/` 源数据一致——改了题库源数据但忘跑构建脚本时，部署会直接失败提醒你。
 
 ## 构建
 
