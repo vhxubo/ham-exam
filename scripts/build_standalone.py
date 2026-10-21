@@ -30,11 +30,18 @@ def main():
         f"<style>\n{css}\n</style>")
     html = html.replace(
         '<link rel="manifest" href="manifest.json">', "")
+    # 单文件版不带外链图标（file:// 下是死链）
+    html = html.replace(
+        '<link rel="apple-touch-icon" href="apple-touch-icon.png">', "")
+    html = html.replace('<meta name="mobile-web-app-capable" content="yes">', "")
+    html = html.replace('<meta name="apple-mobile-web-app-capable" content="yes">', "")
     html = html.replace(
         '<script src="app.js"></script>',
         f"<script>\n{bank}\n</script>\n<script>\n{app}\n</script>")
     # 单文件版不需要 PWA 注册（file:// 下本来就是 no-op，但 https 下会 404 报错）
-    html = html.replace('navigator.serviceWorker.register("sw.js").catch(() => {});', "")
+    html = re.sub(
+        r'// PWA Service Worker.*?navigator\.serviceWorker\.register\("sw\.js"\)\.catch\(\(\) => \{\}\);\n\}\n',
+        "", html, flags=re.S)
 
     out = DIST / "ham-exam.html"
     out.write_text(html, encoding="utf-8")

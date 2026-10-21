@@ -333,7 +333,7 @@ function startDrill(mode, scope, random) {
   const idx = scopeIndexes(scope);
   if (!idx.length) { toast("该范围暂无题目"); return; }
   const order = random ? shuffle(idx) : idx;
-  S.drill = { mode, scope, order, pos: 0, shuffle: !!random };
+  S.drill = { mode, scope, order, pos: 0, shuffle: !!random, ans: {} };
   saveState();
   location.hash = `#/drill/${mode}/${scope}`;
 }
@@ -348,19 +348,23 @@ function viewDrill(mode, scope) {
       v.innerHTML = `<div class="empty">该范围没有题目${scope === "wrong" ? "，错题本是空的 🎉" : ""}<div style="margin-top:14px"><a class="btn" href="#/home">回首页</a></div></div>`;
       return;
     }
-    S.drill = { mode, scope, order: idx, pos: 0, shuffle: false };
+    S.drill = { mode, scope, order: idx, pos: 0, shuffle: false, ans: {} };
     saveState();
   }
   const D = S.drill;
+  D.ans ??= {}; // 兼容旧版本存档
   if (D.pos >= D.order.length) {
     v.innerHTML = `<div class="empty">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="8" r="6"/><path d="M8.5 13 7 22l5-3 5 3-1.5-9"/></svg>
       ${mode === "recite" ? "过完了！" : "刷完了！"}共 ${D.order.length} 题
       <div class="btn-row" style="justify-content:center;margin-top:16px">
         <a class="btn" href="#/home">回首页</a>
+        ${D.pos > 0 ? '<button class="btn" id="backBtn">‹ 回看上一题</button>' : ""}
         <button class="btn primary" id="againBtn">再来一轮</button>
       </div></div>`;
     $("#againBtn").onclick = () => startDrill(mode, scope, D.shuffle);
+    const backBtn = $("#backBtn");
+    if (backBtn) backBtn.onclick = () => { D.pos--; saveState(); viewDrill(mode, scope); };
     return;
   }
 
@@ -380,6 +384,9 @@ function viewDrill(mode, scope) {
   const qc = questionCard(q, { mode, shuffleOpts: mode !== "recite" });
   $("#qbox").appendChild(qc.card);
 
+  // 首题没有上一题，用占位符保持左对齐布局
+  const prevBtnHtml = `<button class="btn ghost" id="prevBtn" ${D.pos > 0 ? "" : "disabled"}>‹ 上一题</button>`;
+
   if (mode === "recite") {
     // 背题：直接揭示答案（空选择集 → 不标错误项，只高亮正确项）
     qc.paint(new Set(), true);
@@ -394,17 +401,20 @@ function viewDrill(mode, scope) {
       ${q.e ? esc(q.e) : "（本题暂无解析）"}${q.m ? `<div class="mnemonic">${esc(q.m)}</div>` : ""}`;
     qc.card.insertBefore(box, qc.footEl);
     recordSeen(q.i);
-    qc.footEl.innerHTML = `<span></span><button class="btn primary" id="nextBtn">下一题（Enter）</button>`;
+    qc.footEl.innerHTML = `${prevBtnHtml}<button class="btn primary" id="nextBtn">下一题（Enter）</button>`;
+    $("#prevBtn").onclick = prev;
     $("#nextBtn").onclick = next;
-    keyHandler = e => { if (e.key === "Enter") next(); };
+    keyHandler = e => {
+      if (e.key === "ArrowLeft" && D.pos > 0) prev();
+      else if (e.key === "Enter") next();
+    };
   } else {
-    const submit = () => {
-      if (done || !pick.size) return;
+    // 回看已作答过的题（返回上一题/中途刷新后）：按存的作答只读还原，不重复计分
+    const reveal = picked => {
       done = true;
-      const picked = [...pick].map(d => qc.keyMap.get(d)).sort();
+      pick = new Set([...qc.keyMap].filter(([, o]) => picked.includes(o)).map(([d]) => d));
       const correct = picked.length === q.a.length && picked.every((x, i) => x === q.a[i]);
       qc.paint(pick, true);
-      recordAnswer(q.i, correct);
       const verdict = document.createElement("div");
       verdict.className = `verdict ${correct ? "ok" : "no"}`;
       verdict.textContent = correct ? "✓ 回答正确" : `✗ 答错了，正确答案 ${q.a.map(i => qc.disp(i)).join("")}`;
@@ -415,49 +425,80 @@ function viewDrill(mode, scope) {
       qc.card.insertBefore(box, qc.footEl);
       $("#confirmBtn")?.remove();
       const last = D.pos === D.order.length - 1;
-      qc.footEl.innerHTML = `<button class="btn ghost" id="stopBtn">退出</button>
+      qc.footEl.innerHTML = `${prevBtnHtml}
+        <button class="btn ghost" id="stopBtn">退出</button>
         <button class="btn primary" id="nextBtn">${last ? "完成" : "下一题（Enter）"}</button>`;
+      $("#prevBtn").onclick = prev;
       $("#nextBtn").onclick = next;
       $("#stopBtn").onclick = () => (location.hash = "#/home");
-      keyHandler = e => { if (e.key === "Enter") next(); };
+      keyHandler = e => {
+        if (e.key === "ArrowLeft" && D.pos > 0) prev();
+        else if (e.key === "Enter") next();
+      };
     };
-    const pickAt = d => {
-      if (done) return;
+
+    const saved = D.ans[D.pos];
+    if (saved) { reveal(saved); }
+    else {
+      const submit = () => {
+        if (done || !pick.size) return;
+        done = true;
+        const picked = [...pick].map(d => qc.keyMap.get(d)).sort((a, b) => a - b);
+        D.ans[D.pos] = picked;
+        recordAnswer(q.i, picked.length === q.a.length && picked.every((x, i) => x === q.a[i]));
+        saveState();
+        reveal(picked);
+      };
+      const pickAt = d => {
+        if (done) return;
+        if (qc.isMulti) {
+          pick.has(d) ? pick.delete(d) : pick.add(d);
+          qc.paint(pick);
+          $("#confirmBtn")?.toggleAttribute("disabled", !pick.size);
+        } else {
+          pick = new Set([d]);
+          qc.paint(pick);
+          submit();
+        }
+      };
+      qc.optsEl.onclick = e => {
+        const b2 = e.target.closest(".opt");
+        if (b2) pickAt(+b2.dataset.d);
+      };
       if (qc.isMulti) {
-        pick.has(d) ? pick.delete(d) : pick.add(d);
-        qc.paint(pick);
-        $("#confirmBtn")?.toggleAttribute("disabled", !pick.size);
+        qc.footEl.innerHTML = `${prevBtnHtml}<span class="chip amber">多选题：选齐后确认</span>
+          <button class="btn primary" id="confirmBtn" disabled>确认（Enter）</button>`;
+        $("#prevBtn").onclick = prev;
+        $("#confirmBtn").onclick = submit;
+        keyHandler = e => {
+          const n = "1234".indexOf(e.key), l = "abcd".indexOf(e.key.toLowerCase());
+          const d = n >= 0 ? n : l;
+          if (d >= 0) pickAt(d);
+          if (e.key === "Enter" && pick.size && !done) submit();
+          else if (e.key === "Enter" && done) next();
+          else if (e.key === "ArrowLeft" && D.pos > 0) prev();
+        };
       } else {
-        pick = new Set([d]);
-        qc.paint(pick);
-        submit();
+        qc.footEl.innerHTML = `${prevBtnHtml}<span></span>`;
+        $("#prevBtn").onclick = prev;
+        keyHandler = e => {
+          const n = "1234".indexOf(e.key), l = "abcd".indexOf(e.key.toLowerCase());
+          const d = n >= 0 ? n : l;
+          if (d >= 0 && !done) pickAt(d);
+          else if (e.key === "Enter" && done) next();
+          else if (e.key === "ArrowLeft" && D.pos > 0) prev();
+        };
       }
-    };
-    qc.optsEl.onclick = e => {
-      const b2 = e.target.closest(".opt");
-      if (b2) pickAt(+b2.dataset.d);
-    };
-    if (qc.isMulti) {
-      qc.footEl.innerHTML = `<span class="chip amber">多选题：选齐后确认</span>
-        <button class="btn primary" id="confirmBtn" disabled>确认（Enter）</button>`;
-      $("#confirmBtn").onclick = submit;
-      keyHandler = e => {
-        const n = "1234".indexOf(e.key), l = "abcd".indexOf(e.key.toLowerCase());
-        const d = n >= 0 ? n : l;
-        if (d >= 0) pickAt(d);
-        if (e.key === "Enter" && pick.size && !done) submit();
-        else if (e.key === "Enter" && done) next();
-      };
-    } else {
-      keyHandler = e => {
-        const n = "1234".indexOf(e.key), l = "abcd".indexOf(e.key.toLowerCase());
-        const d = n >= 0 ? n : l;
-        if (d >= 0 && !done) pickAt(d);
-        else if (e.key === "Enter" && done) next();
-      };
     }
   }
 
+  function prev() {
+    if (D.pos <= 0) return;
+    D.pos--;
+    saveState();
+    viewDrill(mode, scope);
+    $("#view").scrollTop = 0;
+  }
   function next() {
     D.pos++;
     saveState();
@@ -652,9 +693,9 @@ function examRun() {
     const el = document.createElement("div");
     el.innerHTML = `<div class="exam-grid" id="grid"></div>
       <div class="exam-nav">
-        <button class="btn" id="prevBtn">‹ 上一题</button>
+        <button class="btn" id="prevBtn" ${pos === 0 ? "disabled" : ""}>‹ 上一题</button>
         <button class="btn primary" id="submitBtn">交卷</button>
-        <button class="btn" id="nextBtn">下一题 ›</button>
+        <button class="btn" id="nextBtn" ${pos === qids.length - 1 ? "disabled" : ""}>下一题 ›</button>
       </div>`;
     return el;
   };
@@ -899,11 +940,12 @@ function viewSearch(query) {
 /* ================= 启动 ================= */
 document.addEventListener("keydown", e => {
   if (e.target.matches("input, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
-  if (keyHandler) { keyHandler(e); if (["Enter", "1", "2", "3", "4"].includes(e.key)) e.preventDefault(); }
+  if (keyHandler) { keyHandler(e); if (["Enter", "1", "2", "3", "4", "ArrowLeft"].includes(e.key)) e.preventDefault(); }
 });
 $("#themeBtn").onclick = cycleTheme;
 window.addEventListener("hashchange", route);
 applyTheme();
+loadState(); // 启动时恢复当前题库的本地进度（否则刷新后进度全丢）
 renderBankSwitch();
 route();
 // 首页搜索入口：Ctrl+K
